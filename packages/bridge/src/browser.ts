@@ -1,41 +1,126 @@
 // packages/bridge/browser.tsx
-import { useEffect, useState } from "react";
+import { useState, useEffect, useSyncExternalStore, useCallback } from "react";
 import type { BridgeClient, BridgeMethods, BridgeState } from "./types";
 
-let internalState: BridgeState = (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__ ?? {};
-let internalMethods: string[] = (window as Window & { __bridgeMethods__?: string[] }).__bridgeMethods__ ?? [];
-let globalTimeout: number | undefined;
-let debugEnabled = false;
-let internalFallbackMethods: BridgeMethods | null = null;
+// 싱글톤 전역 스토어
+class BridgeStore {
+  private state: BridgeState;
+  private methods: string[];
+  private fallbackMethods: BridgeMethods | null = null;
+  private listeners = new Set<() => void>();
+  private timeout: number | undefined;
+  private debugEnabled = false;
+  private originalConsoleMethods: {
+    log: typeof console.log;
+    warn: typeof console.warn;
+    error: typeof console.error;
+    info: typeof console.info;
+  } | null = null;
 
-function setupConsoleProxy() {
-  if (!debugEnabled || !window.__bridgeCall) return;
+  constructor() {
+    this.state = (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__ ?? {};
+    this.methods = (window as Window & { __bridgeMethods__?: string[] }).__bridgeMethods__ ?? [];
+  }
 
-  const originalConsole = {
-    log: console.log,
-    warn: console.warn,
-    error: console.error,
-    info: console.info,
-  };
+  getState = () => this.state;
+  getMethods = () => this.methods;
+  getFallbackMethods = () => this.fallbackMethods;
+  getTimeout = () => this.timeout;
+  isDebugEnabled = () => this.debugEnabled;
 
-  (["log", "warn", "error", "info"] as const).forEach((method) => {
-    (console as any)[method] = (...args: unknown[]) => {
-      originalConsole[method](...args);
+  setState(newState: BridgeState) {
+    this.state = newState;
+    this.notifyListeners();
+  }
 
-      try {
-        window.__bridgeCall?.("__console", [method, ...args]);
-      } catch {
-        // 실패해도 원래 콘솔은 동작
-      }
+  setMethods(newMethods: string[]) {
+    this.methods = newMethods;
+    this.notifyListeners();
+  }
+
+  setFallbackMethods(methods: BridgeMethods | null) {
+    this.fallbackMethods = methods;
+    this.notifyListeners();
+  }
+
+  setTimeout(timeout: number | undefined) {
+    this.timeout = timeout;
+  }
+
+  setDebugEnabled(enabled: boolean) {
+    this.debugEnabled = enabled;
+  }
+
+  subscribe(listener: () => void) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
     };
-  });
+  }
+
+  private notifyListeners() {
+    this.listeners.forEach((listener) => listener());
+  }
+
+  setupConsoleProxy() {
+    if (!this.debugEnabled || !window.__bridgeCall) return;
+    if (this.originalConsoleMethods) return;
+
+    this.originalConsoleMethods = {
+      log: console.log,
+      warn: console.warn,
+      error: console.error,
+      info: console.info,
+    };
+
+    (["log", "warn", "error", "info"] as const).forEach((method) => {
+      (console as any)[method] = (...args: unknown[]) => {
+        this.originalConsoleMethods![method](...args);
+        try {
+          window.__bridgeCall?.("__console", [method, ...args]);
+        } catch {
+          // 실패해도 원래 콘솔은 동작
+        }
+      };
+    });
+  }
+
+  restoreConsole() {
+    if (!this.originalConsoleMethods) return;
+
+    console.log = this.originalConsoleMethods.log;
+    console.warn = this.originalConsoleMethods.warn;
+    console.error = this.originalConsoleMethods.error;
+    console.info = this.originalConsoleMethods.info;
+
+    this.originalConsoleMethods = null;
+  }
+
+  cleanup() {
+    this.state = {};
+    this.methods = [];
+    this.fallbackMethods = null;
+    this.timeout = undefined;
+    this.debugEnabled = false;
+    this.restoreConsole();
+
+    // window 전역 상태 정리 (fallback 모드인 경우만)
+    const win = window as Window & {
+      __bridgeState__?: BridgeState;
+      __bridgeMethods__?: string[];
+    };
+
+    if (win.__bridgeState__ && !win.__bridgeCall) {
+      delete win.__bridgeState__;
+    }
+
+    this.notifyListeners();
+  }
 }
 
-// RN / Electron 호스트가 쏘는 커스텀 이벤트로 상태 업데이트
-window.addEventListener("bridgeStateChange", (e: Event) => {
-  const detail = (e as CustomEvent<BridgeState>).detail;
-  internalState = detail;
-});
+// 싱글톤 인스턴스
+const bridgeStore = new BridgeStore();
+
 
 const proxy = new Proxy(
   {},
@@ -43,12 +128,15 @@ const proxy = new Proxy(
     get(_target, prop) {
       const key = String(prop);
 
-      const isMethod = internalMethods.includes(key);
-      const isStateProp = internalState && key in internalState;
+      const methods = bridgeStore.getMethods();
+      const state = bridgeStore.getState();
+      const fallbackMethods = bridgeStore.getFallbackMethods();
+      const timeout = bridgeStore.getTimeout();
 
+      const isMethod = methods.includes(key);
+      const isStateProp = state && key in state;
       const isFallbackMethod =
-        internalFallbackMethods &&
-        typeof internalFallbackMethods[key] === "function";
+        fallbackMethods && typeof fallbackMethods[key] === "function";
 
       // 1) Host bridge method → RPC 호출
       if (isMethod) {
@@ -60,30 +148,33 @@ const proxy = new Proxy(
           }
 
           // __bridgeCall 시그니처가 timeout을 지원하는지 확인
-          const timeout = globalTimeout || 30000;
-          
+          const timeoutValue = timeout || 30000;
+
           // 개선된 __bridgeCall 호출 (timeout 전달)
           if (window.__bridgeCall.length >= 3) {
-            return window.__bridgeCall(key, args, timeout) as Promise<unknown>;
+            return window.__bridgeCall(key, args, timeoutValue) as Promise<unknown>;
           }
-          
+
           // 레거시 지원 - 기존 방식으로 fallback
           const promise = window.__bridgeCall(key, args) as Promise<unknown>;
-          
-          if (globalTimeout) {
+
+          if (timeout) {
+            // timeout 타이머 누수 방지: promise가 완료되면 타이머를 clear
+            let timeoutId: ReturnType<typeof setTimeout>;
+
             return Promise.race([
-              promise,
-              new Promise((_, reject) =>
-                setTimeout(
+              promise.finally(() => clearTimeout(timeoutId)),
+              new Promise((_, reject) => {
+                timeoutId = setTimeout(
                   () =>
                     reject(
                       new Error(
-                        `Bridge method '${key}' timed out (${globalTimeout}ms)`
+                        `Bridge method '${key}' timed out (${timeout}ms)`
                       )
                     ),
-                  globalTimeout
-                )
-              ),
+                  timeout
+                );
+              }),
             ]);
           }
 
@@ -94,14 +185,14 @@ const proxy = new Proxy(
       // 2) fallback method
       if (isFallbackMethod) {
         return (...args: unknown[]) => {
-          const fn = internalFallbackMethods[key];
+          const fn = fallbackMethods![key];
           return fn(...args);
         };
       }
 
       // 3) state property
       if (isStateProp) {
-        return internalState[key];
+        return state[key];
       }
 
       // 4) 모르는 key → undefined (에러 X)
@@ -147,8 +238,6 @@ export function useBridge<
     treatFallbackAsReady = true,
   } = options;
 
-  const [, setTick] = useState(0);
-
   const [ready, setReady] = useState<boolean>(() => {
     // 호스트가 이미 주입된 경우
     if (window.__bridgeCall && window.__bridgeMethods__) return true;
@@ -163,36 +252,46 @@ export function useBridge<
 
   const [mode, setMode] = useState<"none" | "host" | "fallback">("none");
 
-  // timeout 전역 설정
+  // useSyncExternalStore로 state 구독
+  const state = useSyncExternalStore(
+    useCallback((callback) => bridgeStore.subscribe(callback), []),
+    useCallback(() => bridgeStore.getState() as S, []),
+    useCallback(() => (initialState ?? {}) as S, [initialState])
+  );
+
+  // timeout 설정
   useEffect(() => {
-    globalTimeout = timeout;
+    bridgeStore.setTimeout(timeout);
     return () => {
-      globalTimeout = undefined;
+      bridgeStore.setTimeout(undefined);
     };
   }, [timeout]);
 
   // debug + console proxy
   useEffect(() => {
-    debugEnabled = !!debug;
-    if (debugEnabled && ready) {
-      setupConsoleProxy();
+    bridgeStore.setDebugEnabled(debug);
+    if (debug && ready) {
+      bridgeStore.setupConsoleProxy();
     }
+
+    return () => {
+      bridgeStore.setDebugEnabled(false);
+      bridgeStore.restoreConsole();
+    };
   }, [debug, ready]);
 
   // host / fallback 모드 결정 + RN/Electron용 이벤트 처리 + 폴링
   useEffect(() => {
     const syncFromWindow = () => {
       const methods = (window as Window & { __bridgeMethods__?: string[] }).__bridgeMethods__;
-      const state = (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__;
+      const windowState = (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__;
 
       if (methods && Array.isArray(methods)) {
-        internalMethods = methods;
+        bridgeStore.setMethods(methods);
       }
-      if (state && typeof state === "object") {
-        internalState = state;
+      if (windowState && typeof windowState === "object") {
+        bridgeStore.setState(windowState);
       }
-
-      setTick((prev) => prev + 1);
     };
 
     const activateHostModeIfAvailable = () => {
@@ -212,12 +311,12 @@ export function useBridge<
       if (!initialState && !fallbackMethods) return;
 
       if (initialState && typeof initialState === "object") {
-        internalState = initialState;
+        bridgeStore.setState(initialState);
         (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__ = initialState;
       }
 
       if (fallbackMethods) {
-        internalFallbackMethods = fallbackMethods as BridgeMethods;
+        bridgeStore.setFallbackMethods(fallbackMethods as BridgeMethods);
       }
 
       setMode("fallback");
@@ -225,8 +324,6 @@ export function useBridge<
       if (treatFallbackAsReady !== false) {
         setReady(true);
       }
-
-      setTick((prev) => prev + 1);
     };
 
     const handleStateChange = () => {
@@ -256,13 +353,22 @@ export function useBridge<
     // event 타이밍 놓친 경우 대비 폴링 (최대 N번만 시도)
     const MAX_TRIES = 500; // 500 * 20ms = 10초 정도
     let tries = 0;
+    let isCleanedUp = false; // cleanup 추적 플래그
 
     const id = setInterval(() => {
+      // cleanup이 호출된 경우 즉시 중단
+      if (isCleanedUp) {
+        clearInterval(id);
+        return;
+      }
+
       if (window.__bridgeCall && window.__bridgeMethods__) {
         if (!ready) {
           setReady(true);
           syncFromWindow();
-          if (debugEnabled) setupConsoleProxy();
+          if (bridgeStore.isDebugEnabled()) {
+            bridgeStore.setupConsoleProxy();
+          }
         } else {
           syncFromWindow();
         }
@@ -272,25 +378,31 @@ export function useBridge<
 
       tries += 1;
       if (tries >= MAX_TRIES) {
-        if (debugEnabled) {
+        if (bridgeStore.isDebugEnabled()) {
           console.warn(
             "[bridge] host not detected within timeout; current mode:",
             mode
           );
         }
         clearInterval(id);
-      } else if (debugEnabled) {
+      } else if (bridgeStore.isDebugEnabled()) {
         console.log("[bridge] polling...", tries);
       }
     }, 20);
 
     return () => {
+      isCleanedUp = true;
       clearInterval(id);
       window.removeEventListener(
         "bridgeStateChange",
         handleStateChange as any
       );
       window.removeEventListener("bridge-ready", handleReady as any);
+
+      // fallback methods 참조 정리
+      if (mode === "fallback") {
+        bridgeStore.setFallbackMethods(null);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -303,11 +415,12 @@ export function useBridge<
   useEffect(() => {
     const handleElectronMessage = (e: MessageEvent) => {
       if (e.data?.type === "bridge-state") {
-        internalState = e.data.payload;
-        (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__ = internalState;
+        const newState = e.data.payload;
+        bridgeStore.setState(newState);
+        (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__ = newState;
 
         const ev = new CustomEvent("bridgeStateChange", {
-          detail: internalState,
+          detail: newState,
         });
         window.dispatchEvent(ev);
       }
@@ -315,10 +428,12 @@ export function useBridge<
       if (e.data?.type === "bridge-ready") {
         setReady(true);
 
-        if (e.data.methods) internalMethods = e.data.methods;
+        if (e.data.methods) {
+          bridgeStore.setMethods(e.data.methods);
+        }
         if (e.data.state) {
-          internalState = e.data.state;
-          (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__ = internalState;
+          bridgeStore.setState(e.data.state);
+          (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__ = e.data.state;
         }
 
         const ev = new Event("bridge-ready");
@@ -330,8 +445,6 @@ export function useBridge<
     return () =>
       window.removeEventListener("message", handleElectronMessage);
   }, []);
-
-  const state = (window as Window & { __bridgeState__?: BridgeState }).__bridgeState__ as S | undefined;
 
   return {
     bridge: bridgeClient as unknown as BridgeClient<S, M>,

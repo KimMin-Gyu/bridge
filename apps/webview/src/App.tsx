@@ -1,4 +1,5 @@
 import { useBridge } from '@repo/bridge/browser'
+import { useEffect } from 'react'
 
 interface BridgeState {
   count: number
@@ -14,6 +15,12 @@ interface BridgeMethods {
 }
 
 function App() {  
+  useEffect(() => {
+    setTimeout(() => {
+      console.log('state', state)
+    }, 5000)
+  }, [])
+
   const { state, bridge } = useBridge<BridgeState, BridgeMethods>({
     initialState: { count: 0 },
     fallbackMethods: {
