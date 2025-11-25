@@ -5,6 +5,8 @@ import React, {
   useMemo,
   useRef,
   useCallback,
+  useState,
+  useSyncExternalStore,
 } from "react";
 
 import WebView, {
@@ -186,6 +188,236 @@ type ConsoleMessage = {
   level: "log" | "warn" | "error" | "info";
   args: unknown[];
 };
+
+// Zustand-style Bridge API
+export type BridgeStore<T> = {
+  getState: () => T;
+  setState: (partial: Partial<T> | ((state: T) => Partial<T>)) => void;
+  subscribe: (listener: (state: T) => void) => () => void;
+} & T;
+
+type StateCreator<T> = (
+  get: () => T,
+  set: (partial: Partial<T> | ((state: T) => Partial<T>)) => void
+) => T;
+
+export function createBridge<T extends Record<string, any>>(
+  createState: StateCreator<T>
+): BridgeStore<T> {
+  type InternalState = T;
+  let state = {} as InternalState;
+  const listeners = new Set<(state: InternalState) => void>();
+
+  const get = (): InternalState => state;
+  const set = (partial: Partial<InternalState> | ((state: InternalState) => Partial<InternalState>)) => {
+    const nextState = typeof partial === "function" ? partial(state) : partial;
+    state = { ...state, ...nextState };
+    listeners.forEach((listener) => listener(state));
+  };
+
+  state = createState(get, set);
+
+  const subscribe = (listener: (state: InternalState) => void) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+
+  const getState = () => state;
+  const setState = set;
+
+  // Use Proxy to maintain method references while providing store API
+  const store = new Proxy({} as BridgeStore<T>, {
+    get(target, prop) {
+      if (prop === 'getState') return getState;
+      if (prop === 'setState') return setState;
+      if (prop === 'subscribe') return subscribe;
+      // Always get from current state, not closure
+      const currentState = getState();
+      return currentState[prop as keyof T];
+    },
+    set(target, prop, value) {
+      if (prop === 'getState' || prop === 'setState' || prop === 'subscribe') {
+        return false;
+      }
+      (state as any)[prop] = value;
+      return true;
+    }
+  });
+
+  return store;
+}
+
+export function useBridge<T extends Record<string, any>, U = T>(
+  bridge: BridgeStore<T>,
+  selector?: (state: T) => U
+): U {
+  const state = useSyncExternalStore(
+    bridge.subscribe,
+    bridge.getState,
+    bridge.getState
+  );
+
+  if (selector) {
+    return selector(state);
+  }
+
+  return state as unknown as U;
+}
+
+type BridgeWebViewProps<T> = Omit<WebViewProps, "onMessage" | "injectedJavaScript" | "ref" | "source"> & {
+  source: WebViewProps["source"];
+  bridge: BridgeStore<T>;
+  onBridgeMessage?: (event: WebViewMessageEvent) => void;
+  debug?: boolean;
+};
+
+export function BridgeWebView<T extends Record<string, any>>({
+  source,
+  bridge,
+  onBridgeMessage,
+  debug = true,
+  ...rest
+}: BridgeWebViewProps<T>) {
+  const webviewRef = useRef<WebView>(null);
+  const [, forceUpdate] = useState({});
+
+  // Subscribe to store changes
+  useEffect(() => {
+    const unsubscribe = bridge.subscribe(() => {
+      forceUpdate({});
+    });
+    return unsubscribe;
+  }, [bridge]);
+
+  const state = bridge.getState();
+
+  // Separate state and methods with useMemo
+  const { bridgeState, bridgeMethods } = useMemo(() => {
+    const bridgeState: BridgeState = {};
+    const bridgeMethods: BridgeMethods = {};
+
+    Object.entries(state).forEach(([key, value]) => {
+      if (typeof value === "function") {
+        bridgeMethods[key] = value;
+      } else {
+        bridgeState[key] = value;
+      }
+    });
+
+    return { bridgeState, bridgeMethods };
+  }, [state]);
+
+  const methodNames = useMemo(
+    () => Object.keys(bridgeMethods),
+    [bridgeMethods]
+  );
+
+  const injectedJavaScript = useMemo(
+    () => buildInjectScript(methodNames, bridgeState, debug),
+    [methodNames, bridgeState, debug]
+  );
+
+  const prevStateRef = useRef<BridgeState | undefined>(undefined);
+
+  useEffect(() => {
+    if (!webviewRef.current) return;
+
+    const hasChanged = !prevStateRef.current ||
+      JSON.stringify(bridgeState) !== JSON.stringify(prevStateRef.current);
+
+    if (hasChanged) {
+      prevStateRef.current = bridgeState;
+      const script = buildEmitStateScript(bridgeState);
+      webviewRef.current.injectJavaScript(script);
+    }
+  }, [bridgeState]);
+
+  const handleMessage = useCallback(
+    async (event: WebViewMessageEvent) => {
+      onBridgeMessage?.(event);
+
+      let msg: BridgeCallMessage;
+      try {
+        msg = JSON.parse(event.nativeEvent.data);
+      } catch {
+        return;
+      }
+      if (msg.type === "console") {
+        const consoleMsg = msg as unknown as ConsoleMessage;
+        const prefix = `[WebView ${consoleMsg.level}]`;
+
+        switch (consoleMsg.level) {
+          case "log":
+            console.log(prefix, ...consoleMsg.args);
+            break;
+          case "warn":
+            console.warn(prefix, ...consoleMsg.args);
+            break;
+          case "error":
+            console.error(prefix, ...consoleMsg.args);
+            break;
+          case "info":
+            console.info(prefix, ...consoleMsg.args);
+            break;
+        }
+        return;
+      }
+
+      if (msg.type !== "bridge-call") return;
+
+      const { id, method, args } = msg;
+      const fn = bridgeMethods[method];
+
+      const sendResponse = (payload: {
+        id: string;
+        ok: boolean;
+        result?: unknown;
+        error?: string;
+      }) => {
+        const script = `
+          (function() {
+            if (window.__handleBridgeResponse) {
+              window.__handleBridgeResponse(${JSON.stringify(payload)});
+            }
+          })();
+          true;
+        `;
+        webviewRef.current?.injectJavaScript(script);
+      };
+
+      if (typeof fn !== "function") {
+        sendResponse({
+          id,
+          ok: false,
+          error: `Bridge method "${method}" not found`,
+        });
+        return;
+      }
+
+      try {
+        const result = await fn(...(args ?? []));
+        sendResponse({ id, ok: true, result: result ?? null });
+      } catch (err: unknown) {
+        sendResponse({
+          id,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [bridgeMethods, onBridgeMessage]
+  );
+
+  return (
+    <WebView
+      ref={webviewRef}
+      source={source}
+      injectedJavaScript={injectedJavaScript}
+      onMessage={handleMessage}
+      {...rest}
+    />
+  );
+}
 
 export function NativeBridgeWebView<
   S extends BridgeState,

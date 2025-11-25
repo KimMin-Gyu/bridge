@@ -213,7 +213,9 @@ export interface UseBridgeOptions<
   S extends BridgeState,
   M extends BridgeMethods,
 > {
+  /** 호스트가 응답하지 않을 경우 타이머 시간 */
   timeout?: number;
+  /** 디버깅 플래그 true일 경우 웹에서의 console.log가 네이티브로 전달 */
   debug?: boolean;
   /** 호스트가 없을 때 기본으로 쓸 초기 상태 */
   initialState?: S;

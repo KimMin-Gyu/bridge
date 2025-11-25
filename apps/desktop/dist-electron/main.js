@@ -1,120 +1,64 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, shell, ipcMain } from "electron";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 function setupElectronMainBridge(opts) {
   const {
     ipcMain: ipcMain2,
     win: win2,
-    methods,
-    getState,
+    bridge,
     callChannel = "bridge-call",
     stateChannel = "bridge-state"
   } = opts;
-  // 디바운스를 위한 변수
-  let broadcastTimeout = null;
-  let lastState = null;
-  
-  // 얕은 비교로 변경된 필드만 체크
-  const hasStateChanged = (newState, oldState) => {
-    if (!oldState) return true;
-    if (typeof newState !== 'object' || typeof oldState !== 'object') {
-      return newState !== oldState;
-    }
-    
-    const newKeys = Object.keys(newState);
-    const oldKeys = Object.keys(oldState);
-    
-    if (newKeys.length !== oldKeys.length) return true;
-    
-    for (const key of newKeys) {
-      if (newState[key] !== oldState[key]) {
-        return true;
+  const getState = () => bridge.getState();
+  const broadcastState = () => {
+    const state2 = getState();
+    const bridgeState = {};
+    Object.entries(state2).forEach(([key, value]) => {
+      if (typeof value === "function") ;
+      else {
+        bridgeState[key] = value;
       }
-    }
-    
-    return false;
+    });
+    win2.webContents.send(stateChannel, bridgeState);
   };
-  
-  const broadcastState = (force = false) => {
-    // 디바운스 처리 - 짧은 시간 내 연속 호출 방지
-    if (broadcastTimeout && !force) {
-      clearTimeout(broadcastTimeout);
+  bridge.subscribe(() => {
+    broadcastState();
+  });
+  const state = getState();
+  const allMethods = {};
+  Object.entries(state).forEach(([key, value]) => {
+    if (typeof value === "function") {
+      allMethods[key] = value;
     }
-    
-    broadcastTimeout = setTimeout(() => {
-      const state = getState();
-      
-      // 얕은 비교로 실제 변경 여부 확인
-      if (!hasStateChanged(state, lastState) && !force) {
-        broadcastTimeout = null;
-        return;
-      }
-      
-      lastState = { ...state }; // shallow copy
-      lastStateSnapshot = JSON.stringify(state);
-      win2.webContents.send(stateChannel, state);
-      broadcastTimeout = null;
-    }, force ? 0 : 16); // 16ms 디바운스 (60fps 기준)
-  };
-  const allMethods = {
-    ...methods,
-    ...{
-      __console: (...args) => {
-        console.log("[main] __console:", args);
-        const [level, ...rest] = args;
-        const prefix = `[WebView ${level}]`;
-        switch (level) {
-          case "log":
-            console.log(prefix, ...rest);
-            break;
-          case "warn":
-            console.warn(prefix, ...rest);
-            break;
-          case "error":
-            console.error(prefix, ...rest);
-            break;
-          case "info":
-            console.info(prefix, ...rest);
-            break;
-          default:
-            console.log(prefix, ...rest);
-        }
-      }
+  });
+  allMethods.__console = (...args) => {
+    const [level, ...rest] = args;
+    const prefix = `[WebView ${level}]`;
+    switch (level) {
+      case "log":
+        console.log(prefix, ...rest);
+        break;
+      case "warn":
+        console.warn(prefix, ...rest);
+        break;
+      case "error":
+        console.error(prefix, ...rest);
+        break;
+      case "info":
+        console.info(prefix, ...rest);
+        break;
+      default:
+        console.log(prefix, ...rest);
     }
   };
-  // 상태 변경을 추적하기 위한 변수
-  let lastStateSnapshot = JSON.stringify(getState());
-  
   const proxiedMethods = new Proxy(allMethods, {
     get(target, prop, receiver) {
       const orig = Reflect.get(target, prop, receiver);
       if (typeof orig !== "function") return orig;
       if (prop === "__console") return orig;
-      
       return async (...args) => {
-        const prevState = JSON.stringify(getState());
         const result = await orig.apply(target, args);
-        
-        // 메서드에서 명시적으로 상태 변경을 알리는 경우 체크
-        const shouldBroadcast = result && typeof result === 'object' && result.__bridgeStateChanged === true;
-        
-        if (shouldBroadcast) {
-          // 명시적 상태 변경 신호
-          broadcastState(true); // 강제 broadcast
-        } else {
-          // 상태가 실제로 변경된 경우에만 broadcast
-          const currentState = JSON.stringify(getState());
-          if (currentState !== prevState) {
-            broadcastState();
-          }
-        }
-        
-        // __bridgeStateChanged 메타데이터 제거 후 반환
-        if (result && typeof result === 'object' && '__bridgeStateChanged' in result) {
-          const { __bridgeStateChanged, ...cleanResult } = result;
-          return cleanResult;
-        }
-        
+        broadcastState();
         return result;
       };
     }
@@ -128,13 +72,21 @@ function setupElectronMainBridge(opts) {
     return await fn(...args ?? []);
   });
   win2.webContents.on("did-finish-load", () => {
-    const state = getState();
-    const methodNames = Object.keys(methods);
+    const currentState = getState();
+    const bridgeState = {};
+    const currentMethodNames = [];
+    Object.entries(currentState).forEach(([key, value]) => {
+      if (typeof value === "function") {
+        currentMethodNames.push(key);
+      } else {
+        bridgeState[key] = value;
+      }
+    });
     win2.webContents.executeJavaScript(
       `
       (function() {
-        window.__bridgeMethods__ = ${JSON.stringify(methodNames)};
-        window.__bridgeState__ = ${JSON.stringify(state)};
+        window.__bridgeMethods__ = ${JSON.stringify(currentMethodNames)};
+        window.__bridgeState__ = ${JSON.stringify(bridgeState)};
         var ev;
         try {
           ev = new Event("bridge-ready");
@@ -144,13 +96,47 @@ function setupElectronMainBridge(opts) {
         }
         window.dispatchEvent(ev);
       })();
-        
+
       true;
     `
     ).catch((err) => console.error("[main] inject error", err));
     broadcastState();
   });
   return { broadcastState };
+}
+function createBridge(createState) {
+  let state = {};
+  const listeners = /* @__PURE__ */ new Set();
+  const get = () => state;
+  const set = (partial) => {
+    const nextState = typeof partial === "function" ? partial(state) : partial;
+    state = { ...state, ...nextState };
+    listeners.forEach((listener) => listener(state));
+  };
+  state = createState(get, set);
+  const subscribe = (listener) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  const getState = () => state;
+  const setState = set;
+  const store = new Proxy({}, {
+    get(target, prop) {
+      if (prop === "getState") return getState;
+      if (prop === "setState") return setState;
+      if (prop === "subscribe") return subscribe;
+      const currentState = getState();
+      return currentState[prop];
+    },
+    set(target, prop, value) {
+      if (prop === "getState" || prop === "setState" || prop === "subscribe") {
+        return false;
+      }
+      state[prop] = value;
+      return true;
+    }
+  });
+  return store;
 }
 const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
 process.env.APP_ROOT = path.join(__dirname$1, "..");
@@ -167,29 +153,25 @@ function createWindow() {
       webviewTag: true
     }
   });
-  let count = 0;
-  const methods = {
-    async getCount() {
-      return count;
+  const appBridge = createBridge((get, set) => ({
+    count: 0,
+    getCount: async () => {
+      return get().count;
     },
-    async increase() {
-      count += 1;
+    increase: async () => {
+      set({ count: get().count + 1 });
     },
-    async decrease() {
-      count -= 1;
+    decrease: async () => {
+      set({ count: get().count - 1 });
     },
-    async goToGoogle() {
-      win == null ? void 0 : win.webContents.loadURL("https://www.google.com");
+    goToGoogle: async () => {
+      await shell.openExternal("https://www.google.com");
     }
-  };
-  function getState() {
-    return { count };
-  }
+  }));
   setupElectronMainBridge({
     ipcMain,
     win,
-    methods,
-    getState
+    bridge: appBridge
   });
   win.webContents.on("did-finish-load", () => {
     win == null ? void 0 : win.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());

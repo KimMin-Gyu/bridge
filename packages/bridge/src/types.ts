@@ -15,6 +15,13 @@ export type BridgeClient<S extends BridgeState, M extends BridgeMethods> = S & {
   [K in keyof M]: M[K];
 };
 
+// Zustand-style Bridge Store
+export type BridgeStore<T> = {
+  getState: () => T;
+  setState: (partial: Partial<T> | ((state: T) => Partial<T>)) => void;
+  subscribe: (listener: (state: T) => void) => () => void;
+} & T;
+
 declare global {
   interface Window {
     __bridgeMethods__?: string[];
