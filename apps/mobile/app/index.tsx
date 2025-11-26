@@ -1,10 +1,10 @@
 import { Button, Text, View, SafeAreaView } from "react-native";
-import { BridgeWebView } from "../lib/bridge";
+import { BridgeWebView, useBridge } from "../lib/bridge-core";
 import { router } from "expo-router";
-import { bridge, useAppBridge } from "@/bridge/bridge";
+import { appBridge } from "@/bridge/bridge";
 
 export default function Index() {
-  const { count, increase, decrease } = useAppBridge();
+  const { count, increase, decrease } = useBridge(appBridge);
 
   return (
     <SafeAreaView
@@ -21,7 +21,7 @@ export default function Index() {
       <View style={{ flex: 1, width: "100%", height: "100%" }}>
         <BridgeWebView
           source={{ uri: "http://localhost:5173" }}
-          bridge={bridge}
+          bridge={appBridge}
         />
       </View>
     </SafeAreaView>

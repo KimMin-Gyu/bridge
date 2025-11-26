@@ -46,7 +46,6 @@ export function setupElectronMainBridge<T extends Record<string, any>>(opts: {
       }
     })
 
-    console.log('[Main] Broadcasting state:', bridgeState)
     win.webContents.send(stateChannel, bridgeState)
   }
 

@@ -1,5 +1,5 @@
 import { Linking } from "react-native";
-import { createBridge, useBridge } from "../lib/bridge";
+import { createBridge } from "../lib/bridge-core";
 
 interface Bridge {
   count: number;
@@ -9,7 +9,7 @@ interface Bridge {
   decrease: () => Promise<void>;  
 }
 
-export const bridge = createBridge<Bridge>((get, set) => ({
+export const appBridge = createBridge<Bridge>((get, set) => ({
   count: 0,
   getCount: async () => {
     return 0;
@@ -21,13 +21,9 @@ export const bridge = createBridge<Bridge>((get, set) => ({
     set({ count: get().count + 1 });
   },
   decrease: async () => {
-    console.log('DECREASE called', get().count)
     set({ count: get().count - 1 });
   },
   sum: async (a: number, b: number) => {
-    await new Promise(resolve => setTimeout(resolve, 4000))
     return a + b;
   },
 }));
-
-export const useAppBridge = () => useBridge(bridge);

@@ -626,19 +626,8 @@ export function createWebBridge<T extends Record<string, any>>(
       const isHostMethod = hostMethods.includes(key);
       const hasHostCall = !!window.__bridgeCall;
 
-      if (debug) {
-        console.log(`[createWebBridge] Accessing method "${key}"`, {
-          isHostMethod,
-          hasHostCall,
-          hostMethods,
-        });
-      }
-
       // 1. If host is available AND has this method, ALWAYS use host
       if (hasHostCall && isHostMethod) {
-        if (debug) {
-          console.log(`[createWebBridge] Using HOST method "${key}"`);
-        }
         return (...args: unknown[]) => {
           const promise = window.__bridgeCall!(key, args, timeout);
 
@@ -658,10 +647,6 @@ export function createWebBridge<T extends Record<string, any>>(
         };
       }
 
-      // 2. Otherwise use fallback method from local state
-      if (debug) {
-        console.log(`[createWebBridge] Using FALLBACK method "${key}"`);
-      }
       return value as (...args: unknown[]) => Promise<unknown>;
     },
     set() {

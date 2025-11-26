@@ -50,10 +50,16 @@ function App() {
       <span>
         Count: {bridge.count}
       </span>
-      <button onClick={() => bridge.increase()}>
+      <button onClick={() => {
+        console.log('INCREASE called')
+        bridge.increase()
+      }}>
         Increase
       </button>
-      <button onClick={() => bridge.decrease()}>
+      <button onClick={() => {
+        console.log('DECREASE called')
+        bridge.decrease()
+      }}>
         Decrease
       </button>
       <button onClick={() => bridge.goToGoogle()}>
