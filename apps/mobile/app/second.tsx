@@ -1,16 +1,28 @@
+import { Button, Text, View, SafeAreaView } from "react-native";
+import { BridgeWebView, useBridge } from "../lib/bridge-core";
+import { router } from "expo-router";
 import { appBridge } from "@/bridge/bridge";
-import { useBridge } from "../lib/bridge-core";
-import { View, Text, Button, SafeAreaView } from "react-native";
 
 export default function Second() {
-  const bridge = useBridge(appBridge);
+  const { count, increase, decrease } = useBridge(appBridge);
 
   return (
-    <SafeAreaView>
-      <Text>Second</Text>
-      <Text>Count: {bridge.count}</Text>
-      <Button title="Increase" onPress={() => bridge.increase()} />
-      <Button title="Decrease" onPress={() => bridge.decrease()} />
+    <SafeAreaView
+      style={{
+        flex: 1,
+        justifyContent: "center",
+        alignItems: "center",
+      }}
+    >
+      <Text>Second: {count}</Text>
+      <Button title="Increase" onPress={() => increase()} />
+      <Button title="Decrease" onPress={() => decrease()} />
+      <View style={{ flex: 1, width: "100%", height: "100%" }}>
+        <BridgeWebView
+          source={{ uri: "http://localhost:5173" }}
+          bridge={appBridge}
+        />
+      </View>
     </SafeAreaView>
-  )
+  );
 }
