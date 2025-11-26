@@ -66,6 +66,7 @@ function createWindow() {
     ipcMain,
     win,
     bridge: appBridge,
+    debug: true, // Set to false to disable console forwarding
   })
 
   // 그냥 테스트 메세지

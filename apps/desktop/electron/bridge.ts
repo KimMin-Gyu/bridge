@@ -28,6 +28,7 @@ export function setupElectronMainBridge<T extends Record<string, any>>(opts: {
     bridge,
     callChannel = 'bridge-call',
     stateChannel = 'bridge-state',
+    debug = false,
   } = opts
 
   const getState = () => bridge.getState()
@@ -137,11 +138,30 @@ export function setupElectronMainBridge<T extends Record<string, any>>(opts: {
         window.__bridgeMethods__ = ${JSON.stringify(currentMethodNames)};
         window.__bridgeState__ = ${JSON.stringify(bridgeState)};
 
+        // Setup console proxy to forward logs to main process (only if debug is enabled)
+        if (${debug}) {
+          var originalConsole = {
+            log: console.log.bind(console),
+            warn: console.warn.bind(console),
+            error: console.error.bind(console),
+            info: console.info.bind(console)
+          };
+
+          ['log', 'warn', 'error', 'info'].forEach(function(method) {
+            console[method] = function() {
+              var args = Array.prototype.slice.call(arguments);
+              originalConsole[method].apply(console, args);
+
+              if (window.__bridgeCall) {
+                window.__bridgeCall('__console', [method].concat(args)).catch(function() {});
+              }
+            };
+          });
+        }
+
         // Setup state listener if available
         if (window.__onBridgeState) {
-          console.log('[Renderer] Setting up __onBridgeState listener');
           window.__onBridgeState(function(state) {
-            console.log('[Renderer] Received state update:', state);
             window.__bridgeState__ = state;
 
             // Dispatch custom event
@@ -154,8 +174,6 @@ export function setupElectronMainBridge<T extends Record<string, any>>(opts: {
             }
             window.dispatchEvent(ev);
           });
-        } else {
-          console.error('[Renderer] __onBridgeState not available!');
         }
 
         var ev;

@@ -34,13 +34,13 @@ const webBridge = createWebBridge<AppBridgeState>(
     },
   }),
   {
-    debug: true,
+    debug: false,
     timeout: 1000
   }
 )
 
 function App() {  
-  const bridge = useWebBridge<AppBridgeState>(webBridge)
+  const bridge = useWebBridge(webBridge)
 
   const [a, setA] = useState(0)
   const [b, setB] = useState(0)
