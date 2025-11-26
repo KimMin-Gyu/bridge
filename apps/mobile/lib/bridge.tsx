@@ -13,7 +13,7 @@ import WebView, {
   WebViewMessageEvent,
   WebViewProps,
 } from "react-native-webview";
-import type { BridgeState, BridgeMethods } from "../../../packages/bridge/src/types";
+import type { BridgeState, BridgeMethods } from "@repo/bridge/types";
 
 type NativeBridgeProps<
   S extends BridgeState,

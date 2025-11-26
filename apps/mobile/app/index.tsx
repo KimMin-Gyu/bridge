@@ -1,35 +1,13 @@
-import { Linking, Button, Text, View } from "react-native";
-import { createBridge, useBridge, BridgeWebView } from "../lib/bridge";
-
-interface AppBridgeState {
-  count: number;
-  getCount: () => Promise<number>;
-  goToGoogle: () => Promise<void>;
-  increase: () => Promise<void>;
-  decrease: () => Promise<void>;
-}
-
-const appBridge = createBridge<AppBridgeState>((get, set) => ({
-  count: 0,
-  getCount: async () => {
-    return get().count;
-  },
-  goToGoogle: async () => {
-    await Linking.openURL("https://www.google.com");
-  },
-  increase: async () => {
-    set({ count: get().count + 1 });
-  },
-  decrease: async () => {
-    set({ count: get().count - 1 });
-  },
-}));
+import { Button, Text, View, SafeAreaView } from "react-native";
+import { BridgeWebView } from "../lib/bridge";
+import { router } from "expo-router";
+import { bridge, useAppBridge } from "@/bridge/bridge";
 
 export default function Index() {
-  const { count, increase, decrease } = useBridge(appBridge);
+  const { count, increase, decrease } = useAppBridge();
 
   return (
-    <View
+    <SafeAreaView
       style={{
         flex: 1,
         justifyContent: "center",
@@ -39,12 +17,13 @@ export default function Index() {
       <Text>Native: {count}</Text>
       <Button title="Increase" onPress={() => increase()} />
       <Button title="Decrease" onPress={() => decrease()} />
+      <Button title="Go to Second" onPress={() => router.push("/second")} />
       <View style={{ flex: 1, width: "100%", height: "100%" }}>
         <BridgeWebView
           source={{ uri: "http://localhost:5173" }}
-          bridge={appBridge}
+          bridge={bridge}
         />
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
