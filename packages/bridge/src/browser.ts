@@ -1,9 +1,9 @@
 // packages/bridge/browser.tsx
 import { useState, useEffect, useSyncExternalStore, useCallback } from "react";
-import type { BridgeClient, BridgeMethods, BridgeState } from "./types";
+import type { BridgeClient, BridgeMethods, BridgeState, BridgeStore } from "./types";
 
 // 싱글톤 전역 스토어
-class BridgeStore {
+class GlobalBridgeStore {
   private state: BridgeState;
   private methods: string[];
   private fallbackMethods: BridgeMethods | null = null;
@@ -119,7 +119,7 @@ class BridgeStore {
 }
 
 // 싱글톤 인스턴스
-const bridgeStore = new BridgeStore();
+const bridgeStore = new GlobalBridgeStore();
 
 
 const proxy = new Proxy(
@@ -454,4 +454,222 @@ export function useBridge<
     ready,
     mode,
   };
+}
+
+// ─────────────────────────────────────────────
+// New API: createWebBridge + useWebBridge
+// ─────────────────────────────────────────────
+
+type WebBridgeOptions<T extends Record<string, any>> = {
+  /** 호스트가 응답하지 않을 경우 타이머 시간 */
+  timeout?: number;
+  /** 디버깅 플래그 true일 경우 웹에서의 console.log가 네이티브로 전달 */
+  debug?: boolean;
+  /** 호스트가 없을 때 사용할 fallback 구현 */
+  fallback?: (
+    get: () => T,
+    set: (partial: Partial<T> | ((state: T) => Partial<T>)) => void
+  ) => T;
+  /**
+   * 호스트가 없어도 fallback만 있으면 ready=true 로 처리할지 여부
+   * @default true
+   */
+  treatFallbackAsReady?: boolean;
+}
+
+export function createWebBridge<T extends Record<string, any>>(
+  fallback: (
+    get: () => T,
+    set: (partial: Partial<T> | ((state: T) => Partial<T>)) => void
+  ) => T,
+  options: Omit<WebBridgeOptions<T>, 'fallback'> = {}
+): BridgeStore<T> {
+  const {
+    timeout = 5_000,
+    debug = false,
+  } = options;
+
+  // Local state management
+  let localState = {} as T;
+  const listeners = new Set<(state: T) => void>();
+  let isInitialized = false;
+  let cachedSnapshot: T | null = null;
+  let lastWindowStateJson: string | null = null;
+
+  const get = (): T => localState;
+  const set = (partial: Partial<T> | ((state: T) => Partial<T>)) => {
+    const nextState = typeof partial === "function" ? partial(localState) : partial;
+    localState = { ...localState, ...nextState };
+    cachedSnapshot = null; // Invalidate cache
+    listeners.forEach((listener) => listener(localState));
+  };
+
+  // Initialize with fallback
+  localState = fallback(get, set);
+
+  const subscribe = (listener: (state: T) => void) => {
+    // Lazy initialization on first subscribe
+    if (!isInitialized) {
+      isInitialized = true;
+      initializeBridge();
+    }
+
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+
+  const getState = (): T => {
+    const windowState = window.__bridgeState__;
+
+    // Build state object (state properties only, exclude methods)
+    const stateOnly = {} as Record<string, unknown>;
+    Object.entries(localState).forEach(([key, value]) => {
+      if (typeof value !== 'function') {
+        stateOnly[key] = value;
+      }
+    });
+
+    // Merge with host state if available
+    if (windowState && typeof windowState === 'object') {
+      const currentWindowStateJson = JSON.stringify(windowState);
+
+      // Return cached snapshot if window state hasn't changed
+      if (cachedSnapshot && lastWindowStateJson === currentWindowStateJson) {
+        return cachedSnapshot;
+      }
+
+      lastWindowStateJson = currentWindowStateJson;
+
+      // Host state overwrites local state
+      const merged = { ...stateOnly, ...windowState };
+
+      // Add ALL methods from localState (these will be used as fallback)
+      Object.entries(localState).forEach(([key, value]) => {
+        if (typeof value === 'function') {
+          (merged as any)[key] = value;
+        }
+      });
+
+      cachedSnapshot = merged as T;
+      return cachedSnapshot;
+    }
+
+    // No host state - return cached or create new snapshot
+    if (!cachedSnapshot) {
+      cachedSnapshot = { ...localState };
+    }
+    return cachedSnapshot;
+  };
+
+  const setState = set;
+
+  const initializeBridge = () => {
+    // Setup global bridge configuration
+    bridgeStore.setTimeout(timeout);
+    bridgeStore.setDebugEnabled(debug);
+
+    // Sync with window state changes
+    const handleStateChange = () => {
+      cachedSnapshot = null; // Invalidate cache
+      listeners.forEach((listener) => listener(getState()));
+    };
+
+    const handleBridgeReady = () => {
+      cachedSnapshot = null; // Invalidate cache
+
+      if (debug) {
+        console.log('[createWebBridge] Bridge ready', {
+          hasHostCall: !!window.__bridgeCall,
+          hostMethods: window.__bridgeMethods__,
+        });
+      }
+
+      listeners.forEach((listener) => listener(getState()));
+    };
+
+    const handleMessage = (e: MessageEvent) => {
+      // Handle Electron postMessage bridge-state updates
+      if (e.data?.type === 'bridge-state') {
+        cachedSnapshot = null; // Invalidate cache
+        listeners.forEach((listener) => listener(getState()));
+      }
+    };
+
+    window.addEventListener('bridgeStateChange', handleStateChange as any);
+    window.addEventListener('bridge-ready', handleBridgeReady as any);
+    window.addEventListener('message', handleMessage);
+  };
+
+  // Create proxy
+  const store = new Proxy({} as BridgeStore<T>, {
+    get(_target, prop) {
+      if (prop === 'getState') return getState;
+      if (prop === 'setState') return setState;
+      if (prop === 'subscribe') return subscribe;
+
+      const key = String(prop);
+      const value = localState[prop as keyof T];
+
+      // If it's not a function, return the value (state property)
+      if (typeof value !== 'function') {
+        // For state properties, check window state first
+        const windowState = window.__bridgeState__;
+        if (windowState && key in windowState) {
+          return windowState[key];
+        }
+        return value;
+      }
+
+      // It's a method - DON'T cache, always check current state
+      // This ensures we use host methods when available
+      const hostMethods = window.__bridgeMethods__ || [];
+      const isHostMethod = hostMethods.includes(key);
+      const hasHostCall = !!window.__bridgeCall;
+
+      if (debug) {
+        console.log(`[createWebBridge] Accessing method "${key}"`, {
+          isHostMethod,
+          hasHostCall,
+          hostMethods,
+        });
+      }
+
+      // 1. If host is available AND has this method, ALWAYS use host
+      if (hasHostCall && isHostMethod) {
+        if (debug) {
+          console.log(`[createWebBridge] Using HOST method "${key}"`);
+        }
+        return (...args: unknown[]) => {
+          return window.__bridgeCall!(key, args, timeout);
+        };
+      }
+
+      // 2. Otherwise use fallback method from local state
+      if (debug) {
+        console.log(`[createWebBridge] Using FALLBACK method "${key}"`);
+      }
+      return value as (...args: unknown[]) => Promise<unknown>;
+    },
+    set() {
+      console.warn("Bridge state is read-only on web");
+      return false;
+    }
+  });
+
+  return store;
+}
+
+export function useWebBridge<T extends Record<string, any>>(
+  bridge: BridgeStore<T>
+): T {
+  // Subscribe to state changes to trigger re-renders
+  useSyncExternalStore(
+    bridge.subscribe,
+    bridge.getState,
+    bridge.getState
+  );
+
+  // Return the bridge Proxy itself, not the state
+  // This ensures methods are always accessed through the Proxy
+  return bridge as T;
 }

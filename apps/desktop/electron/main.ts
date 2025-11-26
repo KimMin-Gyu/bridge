@@ -41,15 +41,21 @@ function createWindow() {
   const appBridge = createBridge<AppBridgeState>((get, set) => ({
     count: 0,
     getCount: async () => {
+      console.log('[Electron] getCount called, count =', get().count)
       return get().count
     },
     increase: async () => {
+      console.log('[Electron] increase called, count =', get().count)
       set({ count: get().count + 1 })
+      console.log('[Electron] after increase, count =', get().count)
     },
     decrease: async () => {
+      console.log('[Electron] decrease called, count =', get().count)
       set({ count: get().count - 1 })
+      console.log('[Electron] after decrease, count =', get().count)
     },
     goToGoogle: async () => {
+      console.log('[Electron] goToGoogle called')
       await shell.openExternal('https://www.google.com')
     }
   }))

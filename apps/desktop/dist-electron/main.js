@@ -19,6 +19,7 @@ function setupElectronMainBridge(opts) {
         bridgeState[key] = value;
       }
     });
+    console.log("[Main] Broadcasting state:", bridgeState);
     win2.webContents.send(stateChannel, bridgeState);
   };
   bridge.subscribe(() => {
@@ -87,6 +88,28 @@ function setupElectronMainBridge(opts) {
       (function() {
         window.__bridgeMethods__ = ${JSON.stringify(currentMethodNames)};
         window.__bridgeState__ = ${JSON.stringify(bridgeState)};
+
+        // Setup state listener if available
+        if (window.__onBridgeState) {
+          console.log('[Renderer] Setting up __onBridgeState listener');
+          window.__onBridgeState(function(state) {
+            console.log('[Renderer] Received state update:', state);
+            window.__bridgeState__ = state;
+
+            // Dispatch custom event
+            var ev;
+            try {
+              ev = new CustomEvent("bridgeStateChange", { detail: state });
+            } catch (_) {
+              ev = document.createEvent("CustomEvent");
+              ev.initCustomEvent("bridgeStateChange", true, true, state);
+            }
+            window.dispatchEvent(ev);
+          });
+        } else {
+          console.error('[Renderer] __onBridgeState not available!');
+        }
+
         var ev;
         try {
           ev = new Event("bridge-ready");
@@ -156,15 +179,21 @@ function createWindow() {
   const appBridge = createBridge((get, set) => ({
     count: 0,
     getCount: async () => {
+      console.log("[Electron] getCount called, count =", get().count);
       return get().count;
     },
     increase: async () => {
+      console.log("[Electron] increase called, count =", get().count);
       set({ count: get().count + 1 });
+      console.log("[Electron] after increase, count =", get().count);
     },
     decrease: async () => {
+      console.log("[Electron] decrease called, count =", get().count);
       set({ count: get().count - 1 });
+      console.log("[Electron] after decrease, count =", get().count);
     },
     goToGoogle: async () => {
+      console.log("[Electron] goToGoogle called");
       await shell.openExternal("https://www.google.com");
     }
   }));

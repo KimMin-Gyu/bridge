@@ -27,5 +27,6 @@ declare global {
     __bridgeMethods__?: string[];
     __bridgeState__?: BridgeState;
     __bridgeCall?: (method: string, args: unknown[], timeout?: number) => Promise<unknown>;
+    __onBridgeState?: (callback: (state: BridgeState) => void) => void;
   }
 }

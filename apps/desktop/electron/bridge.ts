@@ -46,6 +46,7 @@ export function setupElectronMainBridge<T extends Record<string, any>>(opts: {
       }
     })
 
+    console.log('[Main] Broadcasting state:', bridgeState)
     win.webContents.send(stateChannel, bridgeState)
   }
 
@@ -136,6 +137,28 @@ export function setupElectronMainBridge<T extends Record<string, any>>(opts: {
       (function() {
         window.__bridgeMethods__ = ${JSON.stringify(currentMethodNames)};
         window.__bridgeState__ = ${JSON.stringify(bridgeState)};
+
+        // Setup state listener if available
+        if (window.__onBridgeState) {
+          console.log('[Renderer] Setting up __onBridgeState listener');
+          window.__onBridgeState(function(state) {
+            console.log('[Renderer] Received state update:', state);
+            window.__bridgeState__ = state;
+
+            // Dispatch custom event
+            var ev;
+            try {
+              ev = new CustomEvent("bridgeStateChange", { detail: state });
+            } catch (_) {
+              ev = document.createEvent("CustomEvent");
+              ev.initCustomEvent("bridgeStateChange", true, true, state);
+            }
+            window.dispatchEvent(ev);
+          });
+        } else {
+          console.error('[Renderer] __onBridgeState not available!');
+        }
+
         var ev;
         try {
           ev = new Event("bridge-ready");
@@ -159,18 +182,15 @@ export function setupElectronMainBridge<T extends Record<string, any>>(opts: {
 
 export function setupPreload() {
   contextBridge.exposeInMainWorld("__bridgeCall", (method: string, args: unknown[]) => {
+    console.log('[Preload] __bridgeCall invoked:', method, args);
     return ipcRenderer.invoke("bridge-call", { method, args });
   });
-  
-  // 상태 전파 (bridge-state)
-  ipcRenderer.on("bridge-state", (_event, state) => {
-    window.postMessage(
-      {
-        type: "bridge-state",
-        payload: state,
-      },
-      "*"
-    );
+
+  // Expose state listener to renderer
+  contextBridge.exposeInMainWorld("__onBridgeState", (callback: (state: any) => void) => {
+    ipcRenderer.on("bridge-state", (_event, state) => {
+      console.log('[Preload] Forwarding bridge-state to renderer:', state);
+      callback(state);
+    });
   });
-  
 }
