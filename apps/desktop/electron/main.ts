@@ -26,6 +26,7 @@ interface AppBridgeState {
   goToGoogle: () => Promise<void>;
   increase: () => Promise<void>;
   decrease: () => Promise<void>;
+  sum: (a: number, b: number) => Promise<number>;
 }
 
 function createWindow() {
@@ -57,6 +58,14 @@ function createWindow() {
     goToGoogle: async () => {
       console.log('[Electron] goToGoogle called')
       await shell.openExternal('https://www.google.com')
+    },
+    sum: async (a: number, b: number) => {
+      console.log('[Electron] sum called with', a, b)
+      // Simulate a slow operation to test timeout
+      await new Promise(resolve => setTimeout(resolve, 4000))
+      const result = a + b
+      console.log('[Electron] sum result:', result)
+      return result
     }
   }))
 

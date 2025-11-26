@@ -640,7 +640,21 @@ export function createWebBridge<T extends Record<string, any>>(
           console.log(`[createWebBridge] Using HOST method "${key}"`);
         }
         return (...args: unknown[]) => {
-          return window.__bridgeCall!(key, args, timeout);
+          const promise = window.__bridgeCall!(key, args, timeout);
+
+          // Apply timeout if specified
+          if (timeout) {
+            return Promise.race([
+              promise,
+              new Promise<never>((_, reject) => {
+                setTimeout(() => {
+                  reject(new Error(`Bridge method '${key}' timed out (${timeout}ms)`));
+                }, timeout);
+              }),
+            ]);
+          }
+
+          return promise;
         };
       }
 

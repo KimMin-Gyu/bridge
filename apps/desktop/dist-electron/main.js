@@ -195,6 +195,13 @@ function createWindow() {
     goToGoogle: async () => {
       console.log("[Electron] goToGoogle called");
       await shell.openExternal("https://www.google.com");
+    },
+    sum: async (a, b) => {
+      console.log("[Electron] sum called with", a, b);
+      await new Promise((resolve) => setTimeout(resolve, 4e3));
+      const result = a + b;
+      console.log("[Electron] sum result:", result);
+      return result;
     }
   }));
   setupElectronMainBridge({
