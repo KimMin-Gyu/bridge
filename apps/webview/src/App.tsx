@@ -1,5 +1,6 @@
 import { createWebBridge, useWebBridge } from '@repo/bridge/browser'
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 
 interface AppBridgeState {
   count: number
@@ -7,7 +8,7 @@ interface AppBridgeState {
   increase: () => Promise<void>
   decrease: () => Promise<void>
   goToGoogle: () => Promise<void>
-  sum: (a: number, b: number) => Promise<number>
+  sum: (nums: number[]) => Promise<number>
 }
 
 const webBridge = createWebBridge<AppBridgeState>(
@@ -28,25 +29,30 @@ const webBridge = createWebBridge<AppBridgeState>(
       console.log('FALLBACK goToGoogle called')
       window.open('https://www.google.com', '_blank')
     },
-    sum: async (a: number, b: number) => {
-      console.log('FALLBACK sum called', a, b)
+    sum: async (nums: number[]) => {
       return 0
     },
-  }),
+  }), 
   {
     debug: false,
     timeout: 1000
   }
 )
 
-function App() {  
-  const bridge = useWebBridge(webBridge)
+function App({ title }: { title: string }) {
+  const { bridge, isReady } = useWebBridge(webBridge)
 
   const [a, setA] = useState(0)
   const [b, setB] = useState(0)
 
   return (
     <div>
+      <div>
+        {isReady ? 'Ready' : 'Not ready'}
+      </div>
+      <span>
+        {title}
+      </span>
       <span>
         Count: {bridge.count}
       </span>
@@ -67,7 +73,7 @@ function App() {
       </button>
       <button onClick={async () => {
         try {
-          const result = await bridge.sum(a, b)
+          const result = await bridge.sum([a, b])
           alert(`Sum result: ${result}`)
         } catch (error) {
           alert(`Error: ${error}`)
@@ -77,6 +83,9 @@ function App() {
       </button>
       <input type="number" value={a} onChange={(e) => setA(Number(e.target.value))} />
       <input type="number" value={b} onChange={(e) => setB(Number(e.target.value))} />
+      <Link to={title === 'First' ? '/second' : '/first'}>
+        {title === 'First' ? 'Go to Second' : 'Go to First'}
+      </Link>
     </div>
   )
 }

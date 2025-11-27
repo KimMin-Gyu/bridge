@@ -485,7 +485,7 @@ export function createWebBridge<T extends Record<string, any>>(
   options: Omit<WebBridgeOptions<T>, 'fallback'> = {}
 ): BridgeStore<T> {
   const {
-    timeout = 5_000,
+    timeout,
     debug = false,
   } = options;
 
@@ -660,7 +660,12 @@ export function createWebBridge<T extends Record<string, any>>(
 
 export function useWebBridge<T extends Record<string, any>>(
   bridge: BridgeStore<T>
-): T {
+): { bridge: T; isReady: boolean } {
+  const [isReady, setIsReady] = useState<boolean>(() => {
+    // Check if host bridge is already available
+    return !!(window.__bridgeCall && window.__bridgeMethods__);
+  });
+
   // Subscribe to state changes to trigger re-renders
   useSyncExternalStore(
     bridge.subscribe,
@@ -668,7 +673,33 @@ export function useWebBridge<T extends Record<string, any>>(
     bridge.getState
   );
 
-  // Return the bridge Proxy itself, not the state
-  // This ensures methods are always accessed through the Proxy
-  return bridge as T;
+  // Monitor bridge ready state
+  useEffect(() => {
+    const checkReady = () => {
+      const ready = !!(window.__bridgeCall && window.__bridgeMethods__);
+      setIsReady(ready);
+    };
+
+    const handleBridgeReady = () => {
+      setIsReady(true);
+    };
+
+    window.addEventListener('bridge-ready', handleBridgeReady as any);
+
+    // Poll for host bridge availability
+    const pollInterval = setInterval(checkReady, 20);
+
+    // Also check immediately
+    checkReady();
+
+    return () => {
+      window.removeEventListener('bridge-ready', handleBridgeReady as any);
+      clearInterval(pollInterval);
+    };
+  }, []);
+
+  return {
+    bridge: bridge as T,
+    isReady,
+  };
 }

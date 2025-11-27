@@ -26,7 +26,7 @@ interface AppBridgeState {
   goToGoogle: () => Promise<void>;
   increase: () => Promise<void>;
   decrease: () => Promise<void>;
-  sum: (a: number, b: number) => Promise<number>;
+  sum: (nums: number[]) => Promise<number>;
 }
 
 function createWindow() {
@@ -53,13 +53,14 @@ function createWindow() {
     goToGoogle: async () => {
       await shell.openExternal('https://www.google.com')
     },
-    sum: async (a: number, b: number) => {
-      // Simulate a slow operation to test timeout
-      await new Promise(resolve => setTimeout(resolve, 4000))
-      const result = a + b
-      return result
+    sum: async (nums: number[]) => {
+      return nums.reduce((acc, num) => acc + num, 0)
     }
   }))
+
+  setTimeout(() => {
+    appBridge.setState({ count: 10 })
+  }, 5000)
 
   // ✅ 브릿지 먼저 세팅
   setupElectronMainBridge({

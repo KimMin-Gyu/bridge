@@ -10,9 +10,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@repo/bridge": "workspace:*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "@repo/bridge": "workspace:*"
+    "react-router-dom": "^7.9.6"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",

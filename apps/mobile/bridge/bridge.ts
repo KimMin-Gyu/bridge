@@ -6,7 +6,8 @@ interface Bridge {
   getCount: () => Promise<number>;
   goToGoogle: () => Promise<void>;
   increase: () => Promise<void>;
-  decrease: () => Promise<void>;  
+  decrease: () => Promise<void>;
+  sum: (nums: number[]) => Promise<number>;
 }
 
 export const appBridge = createBridge<Bridge>((get, set) => ({
@@ -23,7 +24,7 @@ export const appBridge = createBridge<Bridge>((get, set) => ({
   decrease: async () => {
     set({ count: get().count - 1 });
   },
-  sum: async (a: number, b: number) => {
-    return a + b;
+  sum: async (nums: number[]) => {
+    return nums.reduce((acc, num) => acc + num, 0);
   },
 }));

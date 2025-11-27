@@ -7,7 +7,8 @@ function setupElectronMainBridge(opts) {
     win: win2,
     bridge,
     callChannel = "bridge-call",
-    stateChannel = "bridge-state"
+    stateChannel = "bridge-state",
+    debug = false
   } = opts;
   const getState = () => bridge.getState();
   const broadcastState = () => {
@@ -88,24 +89,26 @@ function setupElectronMainBridge(opts) {
         window.__bridgeMethods__ = ${JSON.stringify(currentMethodNames)};
         window.__bridgeState__ = ${JSON.stringify(bridgeState)};
 
-        // Setup console proxy to forward logs to main process
-        var originalConsole = {
-          log: console.log.bind(console),
-          warn: console.warn.bind(console),
-          error: console.error.bind(console),
-          info: console.info.bind(console)
-        };
-
-        ['log', 'warn', 'error', 'info'].forEach(function(method) {
-          console[method] = function() {
-            var args = Array.prototype.slice.call(arguments);
-            originalConsole[method].apply(console, args);
-
-            if (window.__bridgeCall) {
-              window.__bridgeCall('__console', [method].concat(args)).catch(function() {});
-            }
+        // Setup console proxy to forward logs to main process (only if debug is enabled)
+        if (${debug}) {
+          var originalConsole = {
+            log: console.log.bind(console),
+            warn: console.warn.bind(console),
+            error: console.error.bind(console),
+            info: console.info.bind(console)
           };
-        });
+
+          ['log', 'warn', 'error', 'info'].forEach(function(method) {
+            console[method] = function() {
+              var args = Array.prototype.slice.call(arguments);
+              originalConsole[method].apply(console, args);
+
+              if (window.__bridgeCall) {
+                window.__bridgeCall('__console', [method].concat(args)).catch(function() {});
+              }
+            };
+          });
+        }
 
         // Setup state listener if available
         if (window.__onBridgeState) {
@@ -122,8 +125,6 @@ function setupElectronMainBridge(opts) {
             }
             window.dispatchEvent(ev);
           });
-        } else {
-          console.error('[Renderer] __onBridgeState not available!');
         }
 
         var ev;
@@ -206,16 +207,19 @@ function createWindow() {
     goToGoogle: async () => {
       await shell.openExternal("https://www.google.com");
     },
-    sum: async (a, b) => {
-      await new Promise((resolve) => setTimeout(resolve, 4e3));
-      const result = a + b;
-      return result;
+    sum: async (nums) => {
+      return nums.reduce((acc, num) => acc + num, 0);
     }
   }));
+  setTimeout(() => {
+    appBridge.setState({ count: 10 });
+  }, 5e3);
   setupElectronMainBridge({
     ipcMain,
     win,
-    bridge: appBridge
+    bridge: appBridge,
+    debug: true
+    // Set to false to disable console forwarding
   });
   win.webContents.on("did-finish-load", () => {
     win == null ? void 0 : win.webContents.send("main-process-message", (/* @__PURE__ */ new Date()).toLocaleString());
